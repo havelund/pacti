@@ -8,6 +8,8 @@ from pacti.iocontract import IoContract, IoContractCompound, NestedTermList, Var
 from pacti.terms.polyhedra import serializer
 from pacti.terms.polyhedra.polyhedra import PolyhedralTerm, PolyhedralTermList
 
+import z3
+
 numeric = Union[int, float]
 ser_pt = Dict[str, Union[float, Dict[str, float]]]
 ser_contract = TypedDict(
@@ -216,6 +218,65 @@ class PolyhedralContract(IoContract):
         maximum = self.optimize(var, maximize=True)
         minimum = self.optimize(var, maximize=False)
         return minimum, maximum
+
+    def find_model(self) -> Optional[Dict[str, float]]:
+        """
+        Returns a model satisfying the conjunction of assumptions and guarantees.
+
+        A model is an assignment of values (floating point numbers) to the variables
+        occurring in the input and output lists, that satisfy the conjunction of assumptions
+        and guarantees.
+
+        The model is found by applying the Z3 SMT solver `https://github.com/Z3Prover/z3`.
+        The SMT constraints solved for can be obtained with the method `get_smt_constraints()`.
+
+        Returns:
+            A dictionary mapping input as well as output variables (represented as strings)
+            to values (represented as floats), or `None` if no satisfying assignment exists.
+        """
+        solver = z3.Solver()
+        variables_str = [var.name for var in self.vars]
+        for var in variables_str:
+            locals()[var] = z3.Real(var)
+        for smt_term in self.get_smt_constraints():
+            solver.add(eval(smt_term))
+        if solver.check() == z3.sat:
+            model = solver.model()
+            model_dir = {}
+            for var in model.decls():
+                value = model[var]
+                var_str = str(var)
+                value_float = float(value.as_decimal(3))
+                model_dir[var_str] = value_float
+            return model_dir
+        else:
+            return None
+
+    def get_smt_constraints(self) -> List[str]:
+        """
+        Returns the SMT constraints in string format corresponding to the contract.
+
+        The SMT constraints are produced by the Z3 SMT solver `https://github.com/Z3Prover/z3`.
+
+        Returns:
+            A list of SMT constraints.
+        """
+        assumptions = self.a.terms
+        guarantees = self.g.terms
+        terms = assumptions + guarantees
+        smt_term_list = []
+        for term in terms:
+            variables = term.variables
+            constant = term.constant
+            smt_term = ""
+            plus = ""
+            for variable, coefficient in variables.items():
+                variable_str = variable.name
+                smt_term += f"{plus}{coefficient}*{variable_str}"
+                plus = " + "
+            smt_term += f" <= {constant}"
+            smt_term_list.append(smt_term)
+        return smt_term_list
 
 
 class NestedPolyhedra(NestedTermList):
